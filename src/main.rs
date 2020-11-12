@@ -2,6 +2,13 @@ use anyhow::Result;
 use clap::Clap;
 use std::io::Write;
 use std::rc::Rc;
+use serde::Serialize;
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown format({name})")]
+struct UnknownOutputFormat {
+    name: String,
+}
 
 #[derive(Clap, Debug)]
 #[clap(version = env!("CARGO_PKG_VERSION"), author = "itn3000")]
@@ -18,6 +25,51 @@ struct FindOption {
     follow_symlink: bool,
     #[clap(short, long, about = "max depth(default: 100)", default_value = "100")]
     max_depth: String,
+    #[clap(long, about = "output format(csv or ndjson is valid)", default_value = "csv")]
+    output_format: String
+}
+
+enum RecordWriter<T> where T: std::io::Write {
+    Csv(csv::Writer<T>),
+    NdJson(OutputStream),
+}
+
+impl<T> RecordWriter<T> where T: std::io::Write {
+    pub fn write_record(&mut self, record: FileRecord) -> Result<()> {
+        match self {
+            Self::Csv(w) => {
+                w.write_record(&[record.path.as_str(), 
+                    record.file_type.as_str(), 
+                    record.length.as_ref().map(|x| format!("{}", x)).unwrap_or(String::new()).as_str(), 
+                    record.last_modified.as_ref().unwrap_or(&String::new()).as_str()])?;
+            },
+            Self::NdJson(v) => {
+                let jsonstr = serde_json::to_string(&record)?;
+                v.write(jsonstr.as_bytes())?;
+                v.write(b"\n")?;
+            }
+        }
+        Ok(())
+    } 
+    pub fn output_header(&mut self) -> Result<()> {
+        match self {
+            Self::Csv(w) => {
+                w.write_record(&["path", "file_type", "length", "last_modified"])?;
+            },
+            Self::NdJson(_) => {
+
+            }
+        };
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct FileRecord {
+    path: String,
+    length: Option<u64>,
+    file_type: String,
+    last_modified: Option<String>,
 }
 
 enum OutputStream {
@@ -46,7 +98,7 @@ struct FindContext {
     include: Rc<Vec<glob::Pattern>>,
     exclude: Rc<Vec<glob::Pattern>>,
     match_options: Rc<glob::MatchOptions>,
-    output_stream: csv::Writer<OutputStream>,
+    output_stream: RecordWriter<OutputStream>,
     follow_symlink: bool,
     max_depth: i32,
 }
@@ -68,12 +120,19 @@ impl FindContext {
             None => OutputStream::Stdout(std::io::stdout()),
         };
         let max_depth = opts.max_depth.parse::<i32>()?;
+        let writer = match opts.output_format.to_lowercase().as_str() {
+            "csv" => RecordWriter::Csv(csv::Writer::from_writer(output_stream)),
+            "ndjson" => RecordWriter::NdJson(output_stream),
+            _ => {
+                return Err(anyhow::Error::from(UnknownOutputFormat { name: opts.output_format.clone() }));
+            }
+        };
         Ok(FindContext {
             include: Rc::new(includes?),
             exclude: Rc::new(excludes?),
             match_options: Rc::new(match_options),
             path: p,
-            output_stream: csv::Writer::from_writer(output_stream),
+            output_stream: writer,
             follow_symlink: opts.follow_symlink,
             max_depth: max_depth,
         })
@@ -98,30 +157,20 @@ fn output_file_info(
     } else {
         (None, None)
     };
-    let ststr = if let Some(modified) = modified {
-        match modified {
-            Ok(v) => {
-                let st = chrono::DateTime::<chrono::Local>::from(v);
-                st.format("%Y-%m-%d %H:%M:%S").to_string()
-            }
+    let modified = if let Some(m) = modified {
+        match m {
+            Ok(v) => Some(v),
             Err(e) => {
-                eprintln!(
-                    "failed to transform modified to datetime({}): {:?}",
+                eprintln!("failed to transform modified to datetime({}): {:?}",
                     path.to_string_lossy(),
-                    e
-                );
-                String::new()
-            }
+                    e);
+                None
+            },
         }
     } else {
-        String::new()
+        None
     };
-    ctx.output_stream.write_record(&[
-        path.to_string_lossy().as_ref(),
-        "file",
-        format!("{}", len.unwrap_or(0u64)).as_str(),
-        ststr.as_str(),
-    ])?;
+    write_record(&mut ctx.output_stream, path.to_string_lossy().as_ref(), "file", len, modified)?;
     Ok(ctx.with_path(parent.as_path()))
 }
 
@@ -145,10 +194,10 @@ fn output_file_info_dentry(
 }
 
 fn write_record<T>(
-    writer: &mut csv::Writer<T>,
+    writer: &mut RecordWriter<T>,
     path: &str,
     file_type: &str,
-    length: u64,
+    length: Option<u64>,
     last_write: Option<std::time::SystemTime>,
 ) -> Result<()>
 where
@@ -161,12 +210,12 @@ where
         }
         None => String::new(),
     };
-    writer.write_record(&[
-        path,
-        file_type,
-        format!("{}", length).as_str(),
-        ststr.as_str(),
-    ])?;
+    writer.write_record(FileRecord {
+        path: path.to_owned(),
+        file_type: file_type.to_owned(),
+        length: length,
+        last_modified: Some(ststr)
+    })?;
     Ok(())
 }
 
@@ -237,7 +286,7 @@ fn retrieve_symlink(
         &mut ctx.output_stream,
         path.to_string_lossy().as_ref(),
         "link",
-        0,
+        None,
         modified,
     )?;
     Ok(ctx.with_path(parent))
@@ -310,7 +359,7 @@ fn enum_files_recursive(mut ctx: FindContext, parent: &std::path::Path, depth: i
                         },
                         Err(_) => None
                     };
-                    write_record(&mut ctx.output_stream, fpath.as_path().to_string_lossy().as_ref(), "dir", 0, last_write)?;
+                    write_record(&mut ctx.output_stream, fpath.as_path().to_string_lossy().as_ref(), "dir", None, last_write)?;
                     let new_ctx = ctx.with_path(fpath.as_path());
                     ctx = enum_files_recursive(new_ctx, current_path.as_path(), depth + 1)?;
                 } else if file_type.is_file() {
@@ -322,11 +371,11 @@ fn enum_files_recursive(mut ctx: FindContext, parent: &std::path::Path, depth: i
     Ok(ctx.with_path(parent))
 }
 
-fn output_header<T>(writer: &mut csv::Writer<T>) -> Result<()>
+fn output_header<T>(writer: &mut RecordWriter<T>) -> Result<()>
 where
     T: std::io::Write,
 {
-    writer.write_record(&["path", "file_type", "length", "last_modified"])?;
+    writer.output_header()?;
     Ok(())
 }
 
