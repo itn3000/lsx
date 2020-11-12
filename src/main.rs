@@ -238,7 +238,11 @@ fn retrieve_symlink(
             }
         };
         let link_path = if link_path.as_path().is_relative() {
-            path.join(link_path)
+            if let Some(p) = path.parent() {
+                p.join(link_path)
+            } else {
+                link_path
+            }
         } else {
             link_path
         };
