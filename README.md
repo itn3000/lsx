@@ -13,6 +13,16 @@ or you can download and compile from source via `cargo install --git https://git
 
 you can get help with `lsx --help`
 
+## output fields
+
+|name|description|
+|----|-----------|
+|path|path to file|
+|length|file size(null if file_type is dir or link)|
+|file_type|file type("file","dir","link")|
+|last_modified|last updated time|
+|link_target|target path if the path is symbolic link, or null|
+
 ## examples
 
 * basic usage(list files and directories of tmp directory)

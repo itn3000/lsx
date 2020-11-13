@@ -14,7 +14,7 @@ struct UnknownOutputFormat {
 #[clap(version = env!("CARGO_PKG_VERSION"), author = "itn3000")]
 struct FindOption {
     #[clap(name = "BASEPATH", about = "base path", default_value = ".")]
-    basepath: String,
+    basepath: Vec<String>,
     #[clap(short, long, about = "include glob pattern(default: '**/*')")]
     include: Vec<String>,
     #[clap(short, long, about = "exclude glob pattern(default: empty)")]
@@ -33,6 +33,8 @@ struct FindOption {
     output_format: String,
     #[clap(long, about = "list only files or symlink")]
     leaf_only: bool,
+    #[clap(long, about = "ignore case in pattern matching")]
+    ignore_case: bool,
 }
 
 enum RecordWriter<T>
@@ -122,18 +124,43 @@ impl Write for OutputStream {
     }
 }
 
-struct FindContext {
+struct FindContext<'a> {
     path: std::path::PathBuf,
     include: Rc<Vec<glob::Pattern>>,
     exclude: Rc<Vec<glob::Pattern>>,
     leaf_only: bool,
-    output_stream: RecordWriter<OutputStream>,
+    output_stream: &'a mut RecordWriter<OutputStream>,
     follow_symlink: bool,
     max_depth: i32,
+    match_option: glob::MatchOptions
 }
 
-impl FindContext {
-    pub fn from_options(opts: &FindOption) -> Result<Self> {
+fn create_record_writer(
+    output_path: Option<&str>,
+    format: &str,
+) -> Result<RecordWriter<OutputStream>> {
+    let ost = if let Some(output_path) = output_path {
+        let f = std::fs::File::create(output_path)?;
+        OutputStream::File(f)
+    } else {
+        OutputStream::Stdout(std::io::stdout())
+    };
+    let ret = match format.to_lowercase().as_str() {
+        "csv" => Ok(RecordWriter::Csv(csv::Writer::from_writer(ost))),
+        "ndjson" => Ok(RecordWriter::NdJson(ost)),
+        s => Err(anyhow::Error::from(UnknownOutputFormat {
+            name: s.to_owned(),
+        })),
+    }?;
+    Ok(ret)
+}
+
+impl<'a> FindContext<'a> {
+    pub fn from_options(
+        opts: &'a FindOption,
+        w: &'a mut RecordWriter<OutputStream>,
+        base_path: &str,
+    ) -> Result<Self> {
         let includes: Result<Vec<glob::Pattern>, glob::PatternError> = if opts.include.len() > 0 {
             opts.include.iter().map(|x| glob::Pattern::new(x)).collect()
         } else {
@@ -142,29 +169,19 @@ impl FindContext {
         };
         let excludes: Result<Vec<glob::Pattern>, glob::PatternError> =
             opts.exclude.iter().map(|x| glob::Pattern::new(x)).collect();
-        let p = std::path::PathBuf::from(opts.basepath.as_str());
-        let output_stream = match opts.output.as_ref() {
-            Some(v) => OutputStream::File(std::fs::File::create(v)?),
-            None => OutputStream::Stdout(std::io::stdout()),
-        };
+        let p = std::path::PathBuf::from(base_path);
+        let mut match_option = glob::MatchOptions::new();
+        match_option.case_sensitive = !opts.ignore_case;
         let max_depth = opts.max_depth.parse::<i32>()?;
-        let writer = match opts.output_format.to_lowercase().as_str() {
-            "csv" => RecordWriter::Csv(csv::Writer::from_writer(output_stream)),
-            "ndjson" => RecordWriter::NdJson(output_stream),
-            _ => {
-                return Err(anyhow::Error::from(UnknownOutputFormat {
-                    name: opts.output_format.clone(),
-                }));
-            }
-        };
         Ok(FindContext {
             include: Rc::new(includes?),
             exclude: Rc::new(excludes?),
             leaf_only: opts.leaf_only,
             path: p,
-            output_stream: writer,
+            output_stream: w,
             follow_symlink: opts.follow_symlink,
             max_depth: max_depth,
+            match_option: match_option
         })
     }
     pub fn with_path(mut self, new_path: &std::path::Path) -> Self {
@@ -174,18 +191,18 @@ impl FindContext {
 }
 
 fn output_file_info<'a>(
-    mut ctx: FindContext,
+    mut ctx: FindContext<'a>,
     path: &std::path::Path,
     meta: Option<std::fs::Metadata>,
-) -> Result<FindContext> {
-    if !check_include_exclude_path(path, &ctx.include, &ctx.exclude) {
+) -> Result<FindContext<'a>> {
+    if !check_include_exclude_path(path, &ctx.include, &ctx.exclude, &ctx.match_option) {
         return Ok(ctx);
     }
     let parent = ctx.path.clone();
     if !ctx
         .include
         .iter()
-        .any(|x| x.matches(path.to_string_lossy().as_ref()))
+        .any(|x| x.matches_with(path.to_string_lossy().as_ref(), ctx.match_option.clone()))
     {
         return Ok(ctx);
     }
@@ -220,7 +237,10 @@ fn output_file_info<'a>(
     Ok(ctx.with_path(parent.as_path()))
 }
 
-fn output_file_info_dentry(ctx: FindContext, dentry: &std::fs::DirEntry) -> Result<FindContext> {
+fn output_file_info_dentry<'a>(
+    ctx: FindContext<'a>,
+    dentry: &std::fs::DirEntry,
+) -> Result<FindContext<'a>> {
     let path = dentry.path();
     let meta = match dentry.metadata() {
         Ok(v) => Some(v),
@@ -264,10 +284,11 @@ where
     Ok(())
 }
 
-fn check_include_exclude(s: &str, includes: &[glob::Pattern], excludes: &[glob::Pattern]) -> bool {
-    if excludes.iter().any(|x| x.matches(s)) {
+fn check_include_exclude(s: &str, includes: &[glob::Pattern], excludes: &[glob::Pattern], match_option: &glob::MatchOptions) -> bool {
+    let match_option = match_option.clone();
+    if excludes.iter().any(|x| x.matches_with(s, match_option)) {
         false
-    } else if includes.iter().any(|x| x.matches(s)) {
+    } else if includes.iter().any(|x| x.matches_with(s, match_option)) {
         true
     } else {
         false
@@ -278,16 +299,17 @@ fn check_include_exclude_path(
     p: &std::path::Path,
     includes: &[glob::Pattern],
     excludes: &[glob::Pattern],
+    match_option: &glob::MatchOptions,
 ) -> bool {
-    check_include_exclude(p.to_string_lossy().as_ref(), includes, excludes)
+    check_include_exclude(p.to_string_lossy().as_ref(), includes, excludes, match_option)
 }
 
 fn retrieve_symlink<'a>(
-    mut ctx: FindContext,
+    mut ctx: FindContext<'a>,
     parent: &std::path::Path,
     meta: Option<std::fs::Metadata>,
     depth: i32,
-) -> Result<FindContext> {
+) -> Result<FindContext<'a>> {
     if depth >= ctx.max_depth {
         return Ok(ctx.with_path(parent));
     }
@@ -326,7 +348,7 @@ fn retrieve_symlink<'a>(
                     } else {
                         None
                     };
-                    if check_include_exclude_path(&path, &ctx.include, &ctx.exclude) {
+                    if check_include_exclude_path(&path, &ctx.include, &ctx.exclude, &ctx.match_option) {
                         write_record(
                             &mut ctx.output_stream,
                             path.to_string_lossy().as_ref(),
@@ -351,7 +373,7 @@ fn retrieve_symlink<'a>(
     if !ctx
         .include
         .iter()
-        .any(|x| x.matches(path.to_string_lossy().as_ref()))
+        .any(|x| x.matches_with(path.to_string_lossy().as_ref(), ctx.match_option.clone()))
     {
         return Ok(ctx.with_path(parent));
     }
@@ -368,7 +390,7 @@ fn retrieve_symlink<'a>(
             }
         })
         .unwrap_or(None);
-    if check_include_exclude_path(path.as_path(), &ctx.include, &ctx.exclude) {
+    if check_include_exclude_path(path.as_path(), &ctx.include, &ctx.exclude, &ctx.match_option) {
         write_record(
             &mut ctx.output_stream,
             path.to_string_lossy().as_ref(),
@@ -381,11 +403,11 @@ fn retrieve_symlink<'a>(
     Ok(ctx.with_path(parent))
 }
 
-fn enum_files_recursive(
-    mut ctx: FindContext,
+fn enum_files_recursive<'a>(
+    mut ctx: FindContext<'a>,
     parent: &std::path::Path,
     depth: i32,
-) -> Result<FindContext> {
+) -> Result<FindContext<'a>> {
     if depth >= ctx.max_depth {
         return Ok(ctx.with_path(parent));
     }
@@ -418,7 +440,7 @@ fn enum_files_recursive(
             if ctx
                 .exclude
                 .iter()
-                .any(|x| x.matches(fpath.to_string_lossy().as_ref()))
+                .any(|x| x.matches_with(fpath.to_string_lossy().as_ref(), ctx.match_option.clone()))
             {
                 continue;
             }
@@ -453,7 +475,7 @@ fn enum_files_recursive(
                         Err(_) => None,
                     };
                     if !ctx.leaf_only
-                        && check_include_exclude_path(fpath.as_path(), &ctx.include, &ctx.exclude)
+                        && check_include_exclude_path(fpath.as_path(), &ctx.include, &ctx.exclude, &ctx.match_option)
                     {
                         write_record(
                             &mut ctx.output_stream,
@@ -484,11 +506,21 @@ where
 }
 
 fn enum_files(pattern: &FindOption) -> Result<()> {
-    let mut ctx = FindContext::from_options(pattern)?;
-    let rootpath = ctx.path.clone();
+    let mut record_writer = create_record_writer(
+        pattern.output.as_ref().map(|x| x.as_str()),
+        pattern.output_format.as_ref(),
+    )?;
+    let mut is_first = true;
+    for base_path in pattern.basepath.iter() {
+        let mut ctx = FindContext::from_options(pattern, &mut record_writer, base_path)?;
 
-    output_header(&mut ctx.output_stream)?;
-    enum_files_recursive(ctx, rootpath.as_path(), 0)?;
+        let rootpath = ctx.path.clone();
+        if is_first {
+            output_header(&mut ctx.output_stream)?;
+            is_first = false;
+        }
+        enum_files_recursive(ctx, rootpath.as_path(), 0)?;
+    }
     Ok(())
 }
 
