@@ -1,0 +1,143 @@
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "*"
+env:
+  WIN64_TRIPLET: "x86_64-pc-windows-msvc"
+  LINUX64_TRIPLET: "x86_64-unknown-linux-musl"
+  MAC64_TRIPLET: "x86_64-apple-darwin"
+jobs:
+  build:
+    strategy:
+      matrix:
+        os:
+          - "windows-2019"
+          - "ubuntu-18.04"
+          - "macos-latest"
+        binname:
+          - "lsx"
+          - "lsx.exe"
+        triplet:
+          - "x86_64-pc-windows-msvc"
+          - "x86_64-unknown-linux-musl"
+          - "x86_64-apple-darwin"
+        exclude:
+          - os: "windows-2019"
+            binname: "lsx"
+          - os: "ubuntu-18.04"
+            binname: "lsx.exe"
+          - os: "macos-latest"
+            binname: "lsx.exe"
+          - os: "windows-2019"
+            triplet: "x86_64-unknown-linux-musl"
+          - os: "windows-2019"
+            triplet: "x86_64-apple-darwin"
+          - os: "ubuntu-18.04"
+            triplet: "x86_64-pc-windows-msvc"
+          - os: "ubuntu-18.04"
+            triplet: "x86_64-apple-darwin"
+          - os: "macos-latest"
+            triplet: "x86_64-pc-windows-msvc"
+          - os: "macos-latest"
+            triplet: "x86_64-unknown-linux-musl"
+    runs-on: "${{ matrix.os }}"
+    name: "build binary"
+    steps:
+      - name: "installing musl tools"
+        run: "sudo apt-get install -y musl-dev musl-tools"
+        if: matrix.os == 'ubuntu-18.04'
+      - name: "checkout-repo"
+        uses: "actions/checkout@v1"
+      - name: "ensure toolchain"
+        run: rustup target add ${{ matrix.triplet }}
+      - name: "build-release-binary"
+        run: cargo build --release --target=${{ matrix.triplet }}
+      - name: "strip-binary"
+        run: "strip target/${{ matrix.triplet }}/release/${{ matrix.binname }}"
+        if: matrix.os == 'ubuntu-18.04'
+      - name: "collect-binary"
+        uses: "actions/upload-artifact@v1"
+        with:
+          name: "bin-${{ matrix.triplet }}"
+          path: "target/${{ matrix.triplet }}/release/${{ matrix.binname }}"
+      - name: "collect-pdb"
+        uses: "actions/upload-artifact@v1"
+        with:
+          name: "pdb-${{ matrix.triplet }}"
+          path: "target/${{matrix.triplet}}/release/lsx.pdb"
+        if: matrix.os == 'windows-2019'
+  release:
+    runs-on: "ubuntu-18.04"
+    name: "release binary"
+    if: startsWith(github.ref, 'refs/tags')
+    needs: build
+    steps:
+      - uses: actions/checkout@v1
+      - name: "downloading windows binary"
+        uses: actions/download-artifact@v1
+        with:
+          name: "bin-${{ env.WIN64_TRIPLET }}"
+          path: "bin-${{ env.WIN64_TRIPLET }}"
+      - name: "downloading windows pdb"
+        uses: actions/download-artifact@v1
+        with:
+          name: "pdb-${{ env.WIN64_TRIPLET }}"
+          path: "pdb-${{ env.WIN64_TRIPLET }}"
+      - name: "downloading linux binary"
+        uses: actions/download-artifact@v1
+        with:
+          name: "bin-${{ env.LINUX64_TRIPLET }}"
+          path: "bin-${{ env.LINUX64_TRIPLET }}"
+      - name: "downloading mac binary"
+        uses: actions/download-artifact@v1
+        with:
+          name: "bin-${{ env.MAC64_TRIPLET }}"
+          path: "bin-${{ env.MAC64_TRIPLET }}"
+      - name: "creating github release"
+        uses: actions/create-release@v1
+        id: create_release
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        with:
+          draft: true
+          prerelease: false
+          release_name: "Release ${{github.ref}}"
+          tag_name: "${{github.ref}}"
+      - name: "uploading windows release asset"
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        with:
+          upload_url: "${{ steps.create_release.outputs.upload_url }}"
+          asset_path: "bin-${{ env.WIN64_TRIPLET }}/lsx.exe"
+          asset_name: lsx.exe-${{ env.WIN64_TRIPLET }}
+          asset_content_type: application/octet-binary
+      - name: "uploading windows pdb release asset"
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        with:
+          upload_url: "${{ steps.create_release.outputs.upload_url }}"
+          asset_path: "pdb-${{ env.WIN64_TRIPLET }}/lsx.pdb"
+          asset_name: lsx.pdb
+          asset_content_type: application/octet-binary
+      - name: "uploading linux release asset"
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        with:
+          upload_url: "${{ steps.create_release.outputs.upload_url }}"
+          asset_path: "bin-${{ env.LINUX64_TRIPLET }}/lsx"
+          asset_name: lsx-${{ env.LINUX64_TRIPLET }}
+          asset_content_type: application/octet-binary
+      - name: "uploading mac release asset"
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        with:
+          upload_url: "${{ steps.create_release.outputs.upload_url }}"
+          asset_path: "bin-${{ env.MAC64_TRIPLET }}/lsx"
+          asset_name: lsx-${{ env.MAC64_TRIPLET }}
+          asset_content_type: application/octet-binary
