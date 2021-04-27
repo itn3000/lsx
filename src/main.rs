@@ -35,6 +35,10 @@ struct FindOption {
     leaf_only: bool,
     #[clap(long, about = "ignore case in pattern matching")]
     ignore_case: bool,
+    #[clap(long, about = "list only directory")]
+    dir_only: bool,
+    #[clap(long, about = "output total size of directory(bytes)")]
+    total_size: bool,
 }
 
 enum RecordWriter<T>
@@ -132,7 +136,9 @@ struct FindContext<'a> {
     output_stream: &'a mut RecordWriter<OutputStream>,
     follow_symlink: bool,
     max_depth: i32,
-    match_option: glob::MatchOptions
+    match_option: glob::MatchOptions,
+    dir_only: bool,
+    output_total: bool,
 }
 
 fn create_record_writer(
@@ -173,6 +179,8 @@ impl<'a> FindContext<'a> {
         let mut match_option = glob::MatchOptions::new();
         match_option.case_sensitive = !opts.ignore_case;
         let max_depth = opts.max_depth.parse::<i32>()?;
+        let output_total = opts.total_size;
+        let dir_only = opts.dir_only;
         Ok(FindContext {
             include: Rc::new(includes?),
             exclude: Rc::new(excludes?),
@@ -181,7 +189,9 @@ impl<'a> FindContext<'a> {
             output_stream: w,
             follow_symlink: opts.follow_symlink,
             max_depth: max_depth,
-            match_option: match_option
+            match_option: match_option,
+            output_total: output_total,
+            dir_only: dir_only,
         })
     }
     pub fn with_path(mut self, new_path: &std::path::Path) -> Self {
@@ -194,7 +204,7 @@ fn output_file_info<'a>(
     mut ctx: FindContext<'a>,
     path: &std::path::Path,
     meta: Option<std::fs::Metadata>,
-) -> Result<FindContext<'a>> {
+) -> Result<(FindContext<'a>, u64)> {
     if !check_include_exclude_path(path, &ctx.include, &ctx.exclude, &ctx.match_option) {
         return Ok(ctx);
     }
@@ -234,13 +244,13 @@ fn output_file_info<'a>(
         len,
         modified,
     )?;
-    Ok(ctx.with_path(parent.as_path()))
+    Ok((ctx.with_path(parent.as_path()), len.unwrap_or(0)))
 }
 
 fn output_file_info_dentry<'a>(
     ctx: FindContext<'a>,
     dentry: &std::fs::DirEntry,
-) -> Result<FindContext<'a>> {
+) -> Result<(FindContext<'a>, u64)> {
     let path = dentry.path();
     let meta = match dentry.metadata() {
         Ok(v) => Some(v),
@@ -309,16 +319,16 @@ fn retrieve_symlink<'a>(
     parent: &std::path::Path,
     meta: Option<std::fs::Metadata>,
     depth: i32,
-) -> Result<FindContext<'a>> {
+) -> Result<(FindContext<'a>, u64)> {
     if depth >= ctx.max_depth {
-        return Ok(ctx.with_path(parent));
+        return Ok((ctx.with_path(parent), 0));
     }
     let path = ctx.path.clone();
     let link_target = match std::fs::read_link(path.clone()) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("failed to readlink({}): {:?}", path.to_string_lossy(), e);
-            return Ok(ctx.with_path(parent));
+            return Ok((ctx.with_path(parent), 0));
         }
     };
     if ctx.follow_symlink {
@@ -339,8 +349,9 @@ fn retrieve_symlink<'a>(
                     return retrieve_symlink(ctx, parent, Some(v), depth + 1);
                 }
                 if ftype.is_file() {
-                    ctx = output_file_info(ctx, link_path.as_path(), Some(v))?;
-                    return Ok(ctx.with_path(parent));
+                    let (x, y) = output_file_info(ctx, link_path.as_path(), Some(v))?;
+                    ctx = x;
+                    return Ok((ctx.with_path(parent), y));
                 } else if ftype.is_dir() {
                     ctx = ctx.with_path(link_path.as_path());
                     let modified = if let Some(meta) = meta {
@@ -406,10 +417,10 @@ fn retrieve_symlink<'a>(
 fn enum_files_recursive<'a>(
     mut ctx: FindContext<'a>,
     parent: &std::path::Path,
-    depth: i32,
-) -> Result<FindContext<'a>> {
+    depth: i32
+) -> Result<(FindContext<'a>, u64)> {
     if depth >= ctx.max_depth {
-        return Ok(ctx.with_path(parent));
+        return Ok((ctx.with_path(parent), 0));
     }
     let readiter = match std::fs::read_dir(&ctx.path) {
         Ok(v) => v,
@@ -419,11 +430,13 @@ fn enum_files_recursive<'a>(
                 ctx.path.as_path().to_str().unwrap(),
                 e
             );
-            return Ok(ctx);
+            return Ok((ctx, 0));
         }
     };
     let current_path = ctx.path.clone();
+    let dir_total = 0;
     for dentry in readiter {
+        let mut current_total = 0;
         let dentry = match dentry {
             Ok(v) => Some(v),
             Err(e) => {
@@ -487,14 +500,19 @@ fn enum_files_recursive<'a>(
                         )?;
                     }
                     let new_ctx = ctx.with_path(fpath.as_path());
-                    ctx = enum_files_recursive(new_ctx, current_path.as_path(), depth + 1)?;
+                    let retval = enum_files_recursive(new_ctx, current_path.as_path(), depth + 1, current_total)?;
+                    ctx = retval.0;
+                    current_total += retval.1;
                 } else if file_type.is_file() {
-                    ctx = output_file_info_dentry(ctx, &dentry)?;
+                    let rtval = output_file_info_dentry(ctx, &dentry)?;
+                    ctx = rtval.0;
+                    current_total += rtval.1;
                 }
             }
         }
+        dir_total += current_total;
     }
-    Ok(ctx.with_path(parent))
+    Ok((ctx.with_path(parent), dir_total))
 }
 
 fn output_header<T>(writer: &mut RecordWriter<T>) -> Result<()>
