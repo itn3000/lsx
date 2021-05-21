@@ -200,13 +200,15 @@ impl<'a> FindContext<'a> {
     }
 }
 
-fn output_file_info<'a>(
+fn output_symlink_info<'a>(
     mut ctx: FindContext<'a>,
     path: &std::path::Path,
-    meta: Option<std::fs::Metadata>,
+    link_target: &str,
+    symlink_meta: &std::fs::Metadata,
+    target_meta: Option<std::fs::Metadata>
 ) -> Result<(FindContext<'a>, u64)> {
     if !check_include_exclude_path(path, &ctx.include, &ctx.exclude, &ctx.match_option) {
-        return Ok(ctx);
+        return Ok((ctx, 0));
     }
     let parent = ctx.path.clone();
     if !ctx
@@ -214,7 +216,43 @@ fn output_file_info<'a>(
         .iter()
         .any(|x| x.matches_with(path.to_string_lossy().as_ref(), ctx.match_option.clone()))
     {
-        return Ok(ctx);
+        return Ok((ctx, 0));
+    }
+    let len = if let Some(target_meta) = target_meta {
+        target_meta.len()
+    } else {
+        0
+    };
+    let modified = match symlink_meta.modified() {
+        Ok(v) => Some(v),
+        Err(_) => None
+    };
+    write_record(
+        &mut ctx.output_stream,
+        path.to_string_lossy().as_ref(),
+        Some(link_target),
+        "file",
+        Some(len),
+        modified,
+    )?;
+    Ok((ctx, len))
+}
+
+fn output_file_info<'a>(
+    mut ctx: FindContext<'a>,
+    path: &std::path::Path,
+    meta: Option<std::fs::Metadata>,
+) -> Result<(FindContext<'a>, u64)> {
+    if !check_include_exclude_path(path, &ctx.include, &ctx.exclude, &ctx.match_option) {
+        return Ok((ctx, 0));
+    }
+    let parent = ctx.path.clone();
+    if !ctx
+        .include
+        .iter()
+        .any(|x| x.matches_with(path.to_string_lossy().as_ref(), ctx.match_option.clone()))
+    {
+        return Ok((ctx, 0));
     }
     let (len, modified) = if let Some(meta) = meta {
         (Some(meta.len()), Some(meta.modified()))
@@ -386,7 +424,7 @@ fn retrieve_symlink<'a>(
         .iter()
         .any(|x| x.matches_with(path.to_string_lossy().as_ref(), ctx.match_option.clone()))
     {
-        return Ok(ctx.with_path(parent));
+        return Ok((ctx.with_path(parent), 0));
     }
     let modified = meta
         .map(|meta| match meta.modified() {
@@ -402,6 +440,7 @@ fn retrieve_symlink<'a>(
         })
         .unwrap_or(None);
     if check_include_exclude_path(path.as_path(), &ctx.include, &ctx.exclude, &ctx.match_option) {
+        output_symlink_info(ctx, path.as_path(), link_target.to_string_lossy().as_ref(), std::fs::metadata(path), std::fs::metadata(link_target))?;
         write_record(
             &mut ctx.output_stream,
             path.to_string_lossy().as_ref(),
@@ -411,7 +450,7 @@ fn retrieve_symlink<'a>(
             modified,
         )?;
     }
-    Ok(ctx.with_path(parent))
+    Ok((ctx.with_path(parent), 0))
 }
 
 fn enum_files_recursive<'a>(
@@ -434,7 +473,7 @@ fn enum_files_recursive<'a>(
         }
     };
     let current_path = ctx.path.clone();
-    let dir_total = 0;
+    let mut dir_total = 0;
     for dentry in readiter {
         let mut current_total = 0;
         let dentry = match dentry {
@@ -478,7 +517,9 @@ fn enum_files_recursive<'a>(
                         }
                     };
                     ctx = ctx.with_path(fpath.as_path());
-                    ctx = retrieve_symlink(ctx, current_path.as_path(), meta, depth + 1)?;
+                    let retval = retrieve_symlink(ctx, current_path.as_path(), meta, depth + 1)?;
+                    ctx = retval.0;
+                    current_total += retval.1;
                 } else if file_type.is_dir() {
                     let last_write = match dentry.metadata() {
                         Ok(v) => match v.modified() {
@@ -487,6 +528,9 @@ fn enum_files_recursive<'a>(
                         },
                         Err(_) => None,
                     };
+                    let new_ctx = ctx.with_path(fpath.as_path());
+                    let retval = enum_files_recursive(new_ctx, current_path.as_path(), depth + 1)?;
+                    ctx = retval.0;
                     if !ctx.leaf_only
                         && check_include_exclude_path(fpath.as_path(), &ctx.include, &ctx.exclude, &ctx.match_option)
                     {
@@ -495,13 +539,10 @@ fn enum_files_recursive<'a>(
                             fpath.as_path().to_string_lossy().as_ref(),
                             None,
                             "dir",
-                            None,
+                            Some(retval.1),
                             last_write,
                         )?;
                     }
-                    let new_ctx = ctx.with_path(fpath.as_path());
-                    let retval = enum_files_recursive(new_ctx, current_path.as_path(), depth + 1, current_total)?;
-                    ctx = retval.0;
                     current_total += retval.1;
                 } else if file_type.is_file() {
                     let rtval = output_file_info_dentry(ctx, &dentry)?;
