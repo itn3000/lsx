@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Clap;
 use serde::Serialize;
 use std::io::Write;
+use std::process::Output;
 use std::rc::Rc;
 
 #[derive(Debug, thiserror::Error)]
@@ -27,7 +28,7 @@ struct FindOption {
     max_depth: String,
     #[clap(
         long,
-        about = "output format(csv or ndjson is valid)",
+        about = "output format(csv or ndjson listpath is valid)",
         default_value = "csv"
     )]
     output_format: String,
@@ -47,6 +48,7 @@ where
 {
     Csv(csv::Writer<T>),
     NdJson(OutputStream),
+    ListPath(OutputStream),
 }
 
 impl<T> RecordWriter<T>
@@ -77,6 +79,10 @@ where
                 let jsonstr = serde_json::to_string(&record)?;
                 v.write(jsonstr.as_bytes())?;
                 v.write(b"\n")?;
+            },
+            Self::ListPath(v) => {
+                v.write(record.path.as_bytes())?;
+                v.write(b"\n")?;
             }
         }
         Ok(())
@@ -92,7 +98,8 @@ where
                     "last_modified",
                 ])?;
             }
-            Self::NdJson(_) => {}
+            Self::NdJson(_) => {},
+            Self::ListPath(_) => {},
         };
         Ok(())
     }
@@ -154,6 +161,7 @@ fn create_record_writer(
     let ret = match format.to_lowercase().as_str() {
         "csv" => Ok(RecordWriter::Csv(csv::Writer::from_writer(ost))),
         "ndjson" => Ok(RecordWriter::NdJson(ost)),
+        "listpath" => Ok(RecordWriter::ListPath(ost)),
         s => Err(anyhow::Error::from(UnknownOutputFormat {
             name: s.to_owned(),
         })),
