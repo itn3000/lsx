@@ -204,13 +204,12 @@ fn output_symlink_info<'a>(
     mut ctx: FindContext<'a>,
     path: &std::path::Path,
     link_target: &str,
-    symlink_meta: &std::fs::Metadata,
+    symlink_meta: Option<&std::fs::Metadata>,
     target_meta: Option<std::fs::Metadata>
 ) -> Result<(FindContext<'a>, u64)> {
     if !check_include_exclude_path(path, &ctx.include, &ctx.exclude, &ctx.match_option) {
         return Ok((ctx, 0));
     }
-    let parent = ctx.path.clone();
     if !ctx
         .include
         .iter()
@@ -223,18 +222,24 @@ fn output_symlink_info<'a>(
     } else {
         0
     };
-    let modified = match symlink_meta.modified() {
-        Ok(v) => Some(v),
-        Err(_) => None
+    let modified = if let Some(m) = symlink_meta {
+        match m.modified() {
+            Ok(v) => Some(v),
+            Err(_) => None
+        }
+    } else {
+        None
     };
-    write_record(
-        &mut ctx.output_stream,
-        path.to_string_lossy().as_ref(),
-        Some(link_target),
-        "file",
-        Some(len),
-        modified,
-    )?;
+    if !ctx.dir_only {
+        write_record(
+            &mut ctx.output_stream,
+            path.to_string_lossy().as_ref(),
+            Some(link_target),
+            "link",
+            Some(len),
+            modified,
+        )?;
+    }
     Ok((ctx, len))
 }
 
@@ -274,14 +279,16 @@ fn output_file_info<'a>(
     } else {
         None
     };
-    write_record(
-        &mut ctx.output_stream,
-        path.to_string_lossy().as_ref(),
-        None,
-        "file",
-        len,
-        modified,
-    )?;
+    if !ctx.dir_only {
+        write_record(
+            &mut ctx.output_stream,
+            path.to_string_lossy().as_ref(),
+            None,
+            "file",
+            len,
+            modified,
+        )?;
+    }
     Ok((ctx.with_path(parent.as_path()), len.unwrap_or(0)))
 }
 
@@ -426,29 +433,40 @@ fn retrieve_symlink<'a>(
     {
         return Ok((ctx.with_path(parent), 0));
     }
-    let modified = meta
-        .map(|meta| match meta.modified() {
+    // let modified = meta
+    //     .map(|meta| match meta.modified() {
+    //         Ok(v) => Some(v),
+    //         Err(e) => {
+    //             eprintln!(
+    //                 "get modified time failed({}): {:?}",
+    //                 path.to_string_lossy(),
+    //                 e
+    //             );
+    //             None
+    //         }
+    //     })
+    //     .unwrap_or(None);
+    if check_include_exclude_path(path.as_path(), &ctx.include, &ctx.exclude, &ctx.match_option) {
+        let link_target_relative_path = match path.parent() {
+            Some(v) => v.join(link_target.clone()),
+            None => link_target.clone()
+        };
+        let target_meta = match std::fs::metadata(&link_target_relative_path) {
             Ok(v) => Some(v),
             Err(e) => {
-                eprintln!(
-                    "get modified time failed({}): {:?}",
-                    path.to_string_lossy(),
-                    e
-                );
+                eprintln!("failed to get target metadata({:?}): {:?}", link_target_relative_path, e);
                 None
             }
-        })
-        .unwrap_or(None);
-    if check_include_exclude_path(path.as_path(), &ctx.include, &ctx.exclude, &ctx.match_option) {
-        output_symlink_info(ctx, path.as_path(), link_target.to_string_lossy().as_ref(), std::fs::metadata(path), std::fs::metadata(link_target))?;
-        write_record(
-            &mut ctx.output_stream,
-            path.to_string_lossy().as_ref(),
-            Some(link_target.to_string_lossy().as_ref()),
-            "link",
-            None,
-            modified,
-        )?;
+        };
+        return output_symlink_info(ctx, path.as_path(), link_target.to_string_lossy().as_ref(), meta.as_ref(), target_meta);
+        // write_record(
+        //     &mut ctx.output_stream,
+        //     path.to_string_lossy().as_ref(),
+        //     Some(link_target.to_string_lossy().as_ref()),
+        //     "link",
+        //     None,
+        //     modified,
+        // )?;
     }
     Ok((ctx.with_path(parent), 0))
 }
@@ -578,7 +596,10 @@ fn enum_files(pattern: &FindOption) -> Result<()> {
             output_header(&mut ctx.output_stream)?;
             is_first = false;
         }
-        enum_files_recursive(ctx, rootpath.as_path(), 0)?;
+        let (root_ctx, root_size) = enum_files_recursive(ctx, rootpath.as_path(), 0)?;
+        if root_ctx.output_total {
+            write_record(&mut record_writer, rootpath.as_path().to_string_lossy().as_ref(), None, "dir", Some(root_size), None)?;
+        }
     }
     Ok(())
 }
