@@ -373,9 +373,9 @@ fn retrieve_symlink<'a>(
     meta: Option<std::fs::Metadata>,
     depth: i32,
 ) -> Result<(FindContext<'a>, u64)> {
-    if depth >= ctx.max_depth {
-        return Ok((ctx.with_path(parent), 0));
-    }
+    // if depth >= ctx.max_depth {
+    //     return Ok((ctx.with_path(parent), 0));
+    // }
     let path = ctx.path.clone();
     let link_target = match std::fs::read_link(path.clone()) {
         Ok(v) => v,
@@ -399,6 +399,7 @@ fn retrieve_symlink<'a>(
                 let ftype = v.file_type();
                 if ftype.is_symlink() {
                     ctx = ctx.with_path(link_path.as_path());
+                    // increase depth for preventing infinite loop if symlink points itself
                     return retrieve_symlink(ctx, parent, Some(v), depth + 1);
                 }
                 if ftype.is_file() {
