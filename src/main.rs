@@ -2,7 +2,6 @@ use anyhow::Result;
 use clap::Clap;
 use serde::Serialize;
 use std::io::Write;
-use std::process::Output;
 use std::rc::Rc;
 
 #[derive(Debug, thiserror::Error)]
@@ -251,6 +250,42 @@ fn output_symlink_info<'a>(
     Ok((ctx, len))
 }
 
+fn output_symlink_file_info<'a>(
+    ctx: FindContext<'a>,
+    path: &std::path::Path,
+    link_target: &std::path::Path,
+    link_path: &std::path::Path,
+    meta: Option<std::fs::Metadata>,
+) -> Result<(FindContext<'a>, u64)> {
+    if !check_include_exclude_path(path, &ctx.include, &ctx.exclude, &ctx.match_option) {
+        return Ok((ctx, 0));
+    }
+    let parent = ctx.path.clone();
+    let (l, modified) = match meta {
+        Some(v) => {
+            let l = v.len();
+            let modified = match v.modified() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    eprintln!("failed to transform modified to datetime({}): {:?}", link_path.to_string_lossy(), e);
+                    None
+                }
+            };
+            (Some(l), modified)
+        },
+        None => (None, None)
+    };
+    if !ctx.dir_only {
+        write_record(ctx.output_stream, 
+            path.to_string_lossy().as_ref(), 
+            Some(link_target.to_string_lossy().as_ref()),
+            "file", 
+            l,
+        modified)?;
+    }
+    Ok((ctx.with_path(parent.as_path()), l.unwrap_or(0)))
+}
+
 fn output_file_info<'a>(
     mut ctx: FindContext<'a>,
     path: &std::path::Path,
@@ -373,9 +408,9 @@ fn retrieve_symlink<'a>(
     meta: Option<std::fs::Metadata>,
     depth: i32,
 ) -> Result<(FindContext<'a>, u64)> {
-    // if depth >= ctx.max_depth {
-    //     return Ok((ctx.with_path(parent), 0));
-    // }
+    if depth >= ctx.max_depth + 1 {
+        return Ok((ctx.with_path(parent), 0));
+    }
     let path = ctx.path.clone();
     let link_target = match std::fs::read_link(path.clone()) {
         Ok(v) => v,
@@ -403,27 +438,28 @@ fn retrieve_symlink<'a>(
                     return retrieve_symlink(ctx, parent, Some(v), depth + 1);
                 }
                 if ftype.is_file() {
-                    let (x, y) = output_file_info(ctx, link_path.as_path(), Some(v))?;
+                    let (x, y) = output_symlink_file_info(ctx, &path, link_target.as_path(), link_path.as_path(), Some(v))?;
                     ctx = x;
                     return Ok((ctx.with_path(parent), y));
                 } else if ftype.is_dir() {
-                    ctx = ctx.with_path(link_path.as_path());
+                    // ctx = ctx.with_path(link_path.as_path());
                     let modified = if let Some(meta) = meta {
                         meta.modified().map(|x| Some(x)).unwrap_or(None)
                     } else {
                         None
                     };
-                    if check_include_exclude_path(&path, &ctx.include, &ctx.exclude, &ctx.match_option) {
+                    let (mut ctx_tmp, len) = enum_files_recursive(ctx, parent, depth)?;
+                    if check_include_exclude_path(&path, &ctx_tmp.include, &ctx_tmp.exclude, &ctx_tmp.match_option) {
                         write_record(
-                            &mut ctx.output_stream,
+                            &mut ctx_tmp.output_stream,
                             path.to_string_lossy().as_ref(),
                             Some(link_target.to_string_lossy().as_ref()),
                             "dir",
-                            None,
+                            Some(len),
                             modified,
                         )?;
                     }
-                    return enum_files_recursive(ctx, parent, depth + 1);
+                    return Ok((ctx_tmp, len));
                 }
             }
             Err(e) => {
@@ -442,19 +478,6 @@ fn retrieve_symlink<'a>(
     {
         return Ok((ctx.with_path(parent), 0));
     }
-    // let modified = meta
-    //     .map(|meta| match meta.modified() {
-    //         Ok(v) => Some(v),
-    //         Err(e) => {
-    //             eprintln!(
-    //                 "get modified time failed({}): {:?}",
-    //                 path.to_string_lossy(),
-    //                 e
-    //             );
-    //             None
-    //         }
-    //     })
-    //     .unwrap_or(None);
     if check_include_exclude_path(path.as_path(), &ctx.include, &ctx.exclude, &ctx.match_option) {
         let link_target_relative_path = match path.parent() {
             Some(v) => v.join(link_target.clone()),
@@ -468,14 +491,6 @@ fn retrieve_symlink<'a>(
             }
         };
         return output_symlink_info(ctx, path.as_path(), link_target.to_string_lossy().as_ref(), meta.as_ref(), target_meta);
-        // write_record(
-        //     &mut ctx.output_stream,
-        //     path.to_string_lossy().as_ref(),
-        //     Some(link_target.to_string_lossy().as_ref()),
-        //     "link",
-        //     None,
-        //     modified,
-        // )?;
     }
     Ok((ctx.with_path(parent), 0))
 }
