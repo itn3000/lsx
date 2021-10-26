@@ -1,3 +1,7 @@
+# 0.2.1
+
+* fix symlink with maxdepth(#1)
+
 # 0.2.0
 
 * add `listpath` output format
