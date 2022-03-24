@@ -22,6 +22,8 @@ you can get help with `lsx --help`
 |file_type|file type("file","dir","link")|
 |last_modified|last updated time|
 |link_target|target path if the path is symbolic link, or null|
+|file_version|Windows file FileVersion if available|
+|product_version|Windows file ProductVersion if available|
 
 ## examples
 
@@ -35,3 +37,5 @@ you can get help with `lsx --help`
     * `lsx -o x.csv tmp`
 * output file as ndjson
     * `lsx --output-format ndjson tmp`
+* get file version
+    * `lsx --get-version`
