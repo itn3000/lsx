@@ -11,7 +11,7 @@ or you can download and compile from source via `cargo install --git https://git
 
 ## command options
 
-you can get help with `lsx --help`
+you can get help with `lsx --help`.
 
 ## output fields
 
