@@ -1,5 +1,6 @@
 # 0.3.0
 
+* add `--get-version` option
 * add file_version and product_version field
 
 # 0.2.1
