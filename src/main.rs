@@ -4,6 +4,8 @@ use serde::Serialize;
 use std::io::Write;
 use std::rc::Rc;
 
+mod pe;
+
 #[derive(Debug, thiserror::Error)]
 #[error("unknown format({name})")]
 struct UnknownOutputFormat {
@@ -39,6 +41,8 @@ struct FindOption {
     dir_only: bool,
     #[clap(long, about = "output total size of directory(bytes)")]
     total_size: bool,
+    #[clap(long, about = "get PE file version if available")]
+    get_version: bool,
 }
 
 enum RecordWriter<T>
@@ -72,6 +76,8 @@ where
                         .as_ref()
                         .unwrap_or(&String::new())
                         .as_str(),
+                    record.file_version.unwrap_or(String::new()).as_str(),
+                    record.product_version.unwrap_or(String::new()).as_str(),
                 ])?;
             }
             Self::NdJson(v) => {
@@ -89,12 +95,15 @@ where
     pub fn output_header(&mut self) -> Result<()> {
         match self {
             Self::Csv(w) => {
+
                 w.write_record(&[
                     "path",
                     "link_target",
                     "file_type",
                     "length",
                     "last_modified",
+                    "file_version",
+                    "product_version",
                 ])?;
             }
             Self::NdJson(_) => {},
@@ -111,6 +120,8 @@ struct FileRecord {
     file_type: String,
     last_modified: Option<String>,
     link_target: Option<String>,
+    file_version: Option<String>,
+    product_version: Option<String>,
 }
 
 enum OutputStream {
@@ -145,6 +156,7 @@ struct FindContext<'a> {
     match_option: glob::MatchOptions,
     dir_only: bool,
     output_total: bool,
+    get_version: bool,
 }
 
 fn create_record_writer(
@@ -199,6 +211,7 @@ impl<'a> FindContext<'a> {
             match_option: match_option,
             output_total: output_total,
             dir_only: dir_only,
+            get_version: opts.get_version,
         })
     }
     pub fn with_path(mut self, new_path: &std::path::Path) -> Self {
@@ -238,6 +251,9 @@ fn output_symlink_info<'a>(
         None
     };
     if !ctx.dir_only {
+        let (file_version, product_version) = if ctx.get_version {
+            pe::read_version_from_dll(path).unwrap_or((None, None))
+        } else { (None, None) };
         write_record(
             &mut ctx.output_stream,
             path.to_string_lossy().as_ref(),
@@ -245,6 +261,8 @@ fn output_symlink_info<'a>(
             "link",
             Some(len),
             modified,
+            file_version,
+            product_version
         )?;
     }
     Ok((ctx, len))
@@ -276,12 +294,17 @@ fn output_symlink_file_info<'a>(
         None => (None, None)
     };
     if !ctx.dir_only {
+        let (file_version, product_version) = if ctx.get_version { 
+            pe::read_version_from_dll(path).unwrap_or((None, None))
+        } else { (None, None) };
         write_record(ctx.output_stream, 
             path.to_string_lossy().as_ref(), 
             Some(link_target.to_string_lossy().as_ref()),
             "file", 
             l,
-        modified)?;
+            modified,
+            file_version,
+            product_version)?;
     }
     Ok((ctx.with_path(parent.as_path()), l.unwrap_or(0)))
 }
@@ -323,6 +346,7 @@ fn output_file_info<'a>(
         None
     };
     if !ctx.dir_only {
+        let (file_version, product_version) = pe::read_version_from_dll(path).unwrap_or((None, None));
         write_record(
             &mut ctx.output_stream,
             path.to_string_lossy().as_ref(),
@@ -330,6 +354,8 @@ fn output_file_info<'a>(
             "file",
             len,
             modified,
+            file_version,
+            product_version
         )?;
     }
     Ok((ctx.with_path(parent.as_path()), len.unwrap_or(0)))
@@ -361,6 +387,8 @@ fn write_record<T>(
     file_type: &str,
     length: Option<u64>,
     last_write: Option<std::time::SystemTime>,
+    file_version: Option<String>,
+    product_version: Option<String>
 ) -> Result<()>
 where
     T: std::io::Write,
@@ -378,6 +406,8 @@ where
         file_type: file_type.to_owned(),
         length: length,
         last_modified: Some(ststr),
+        file_version: file_version,
+        product_version: product_version,
     })?;
     Ok(())
 }
@@ -457,6 +487,8 @@ fn retrieve_symlink<'a>(
                             "dir",
                             Some(len),
                             modified,
+                            None,
+                            None
                         )?;
                     }
                     return Ok((ctx_tmp, len));
@@ -583,6 +615,8 @@ fn enum_files_recursive<'a>(
                             "dir",
                             Some(retval.1),
                             last_write,
+                            None,
+                            None
                         )?;
                     }
                     current_total += retval.1;
@@ -622,7 +656,7 @@ fn enum_files(pattern: &FindOption) -> Result<()> {
         }
         let (root_ctx, root_size) = enum_files_recursive(ctx, rootpath.as_path(), 0)?;
         if root_ctx.output_total {
-            write_record(&mut record_writer, rootpath.as_path().to_string_lossy().as_ref(), None, "dir", Some(root_size), None)?;
+            write_record(&mut record_writer, rootpath.as_path().to_string_lossy().as_ref(), None, "dir", Some(root_size), None, None, None)?;
         }
     }
     Ok(())

@@ -1,3 +1,7 @@
+# 0.3.0
+
+* add file_version and product_version field
+
 # 0.2.1
 
 * fix symlink with maxdepth(#1)
