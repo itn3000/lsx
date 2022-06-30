@@ -30,7 +30,8 @@ you can get help with `lsx --help`.
 * basic usage(list files and directories of tmp directory)
     * `lsx tmp`
 * include and exclude(list files which has `*.cs` extension, exclude which name is `abc`(both files and directories))
-    * `lsx -i "**/*.cs" -e "**/abc" tmp` 
+    * `lsx -i "**/*.cs" -e "**/abc" -- tmp`
+    * you must need "--" before base paths when `-i` or `-e` option are used
 * list only files
     * `lsx --leaf-only tmp`
 * output to file `x.csv`
