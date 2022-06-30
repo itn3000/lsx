@@ -1,3 +1,7 @@
+# 0.3.1
+
+* update dependencies for security reason
+
 # 0.3.0
 
 * add `--get-version` option
