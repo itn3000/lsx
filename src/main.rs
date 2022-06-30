@@ -1,8 +1,8 @@
 use anyhow::Result;
-use clap::Clap;
 use serde::Serialize;
 use std::io::Write;
 use std::rc::Rc;
+use clap::Parser;
 
 mod pe;
 
@@ -12,36 +12,36 @@ struct UnknownOutputFormat {
     name: String,
 }
 
-#[derive(Clap, Debug)]
+#[derive(clap::Parser, Debug)]
 #[clap(version = env!("CARGO_PKG_VERSION"), author = "itn3000")]
 struct FindOption {
-    #[clap(name = "BASEPATH", about = "base path", default_value = ".")]
+    #[clap(name = "BASEPATH", help = "base path", default_value = ".")]
     basepath: Vec<String>,
-    #[clap(short, long, about = "include glob pattern(default: '**/*')")]
+    #[clap(short, long, help = "include glob pattern(default: '**/*')")]
     include: Vec<String>,
-    #[clap(short, long, about = "exclude glob pattern(default: empty)")]
+    #[clap(short, long, help = "exclude glob pattern(default: empty)")]
     exclude: Vec<String>,
-    #[clap(short, long, about = "output file path(default: stdout)")]
+    #[clap(short, long, help = "output file path(default: stdout)")]
     output: Option<String>,
-    #[clap(long, about = "follow symlink(default: false)")]
+    #[clap(long, help = "follow symlink(default: false)")]
     follow_symlink: bool,
-    #[clap(short, long, about = "max depth", default_value = "100")]
+    #[clap(short, long, help = "max depth", default_value = "100")]
     max_depth: String,
     #[clap(
         long,
-        about = "output format(csv or ndjson listpath is valid)",
+        help = "output format(csv or ndjson listpath is valid)",
         default_value = "csv"
     )]
     output_format: String,
-    #[clap(long, about = "list only files or symlink")]
+    #[clap(long, help = "list only files or symlink")]
     leaf_only: bool,
-    #[clap(long, about = "ignore case in pattern matching")]
+    #[clap(long, help = "ignore case in pattern matching")]
     ignore_case: bool,
-    #[clap(long, about = "list only directory")]
+    #[clap(long, help = "list only directory")]
     dir_only: bool,
-    #[clap(long, about = "output total size of directory(bytes)")]
+    #[clap(long, help = "output total size of directory(bytes)")]
     total_size: bool,
-    #[clap(long, about = "get PE file version if available")]
+    #[clap(long, help = "get PE file version if available")]
     get_version: bool,
 }
 
