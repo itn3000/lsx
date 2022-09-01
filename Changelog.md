@@ -1,3 +1,8 @@
+# 0.4.0
+
+* add `--checksum` and `--checksum-alg` option
+* add "checksum" field
+
 # 0.3.1
 
 * update dependencies for security reason
