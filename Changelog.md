@@ -1,3 +1,7 @@
+# 0.4.1
+
+* rename checksum to "hash"
+
 # 0.4.0
 
 * add `--checksum` and `--checksum-alg` option

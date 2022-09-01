@@ -24,7 +24,7 @@ you can get help with `lsx --help`.
 |link_target|target path if the path is symbolic link, or null|
 |file_version|Windows file FileVersion by adding `--get-version` option if available|
 |product_version|Windows file ProductVersion by adding `--get-version` option if available|
-|checksum|file checksum as upper hex string if `--checksum` option is added, or null|
+|hash|file hash as upper hex string if `--hash` option is added, or null|
 
 ## examples
 

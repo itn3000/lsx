@@ -20,7 +20,7 @@ struct UnknownOutputFormat {
 }
 
 #[derive(Copy, Clone, ValueEnum, Debug)]
-enum ChecksumAlgorithm {
+enum FileHash {
     MD5,
     SHA1,
     SHA256,
@@ -57,10 +57,10 @@ struct FindOption {
     total_size: bool,
     #[clap(long, help = "get PE file version if available")]
     get_version: bool,
-    #[clap(long, help = "get checksum for file as upper hex string(this may take heavy cpu usage)")]
-    checksum: bool,
-    #[clap(long, help = "checksum algorithm(default: sha256)", value_enum)]
-    checksum_alg: Option<ChecksumAlgorithm>,
+    #[clap(long, help = "get hash for file as upper hex string(this may take heavy cpu usage)")]
+    hash: bool,
+    #[clap(long, help = "hash algorithm(default: sha256)", value_enum)]
+    hash_alg: Option<FileHash>,
 }
 
 enum RecordWriter<T>
@@ -96,7 +96,7 @@ where
                         .as_str(),
                     record.file_version.unwrap_or(String::new()).as_str(),
                     record.product_version.unwrap_or(String::new()).as_str(),
-                    record.checksum.unwrap_or(String::new()).as_str()
+                    record.hash.unwrap_or(String::new()).as_str()
                 ])?;
             }
             Self::NdJson(v) => {
@@ -123,7 +123,7 @@ where
                     "last_modified",
                     "file_version",
                     "product_version",
-                    "checksum",
+                    "hash",
                 ])?;
             }
             Self::NdJson(_) => {},
@@ -142,7 +142,7 @@ struct FileRecord {
     link_target: Option<String>,
     file_version: Option<String>,
     product_version: Option<String>,
-    checksum: Option<String>,
+    hash: Option<String>,
 }
 
 enum OutputStream {
@@ -178,7 +178,7 @@ struct FindContext<'a> {
     dir_only: bool,
     output_total: bool,
     get_version: bool,
-    checksum: Option<ChecksumAlgorithm>,
+    hash: Option<FileHash>,
 }
 
 fn create_record_writer(
@@ -222,8 +222,8 @@ impl<'a> FindContext<'a> {
         let max_depth = opts.max_depth.parse::<i32>()?;
         let output_total = opts.total_size;
         let dir_only = opts.dir_only;
-        let checksum = if opts.checksum {
-            Some(opts.checksum_alg.unwrap_or(ChecksumAlgorithm::SHA256))
+        let hash = if opts.hash {
+            Some(opts.hash_alg.unwrap_or(FileHash::SHA256))
         } else {
             None
         };
@@ -239,7 +239,7 @@ impl<'a> FindContext<'a> {
             output_total: output_total,
             dir_only: dir_only,
             get_version: opts.get_version,
-            checksum: checksum,
+            hash: hash,
         })
     }
     pub fn with_path(mut self, new_path: &std::path::Path) -> Self {
@@ -297,7 +297,7 @@ fn bytes_to_upper_hex_string(data: &[u8]) -> String {
 
 }
 
-fn get_checksum_from_filehandle<T: Digest>(mut f: File, mut d: T) -> Result<String>
+fn get_hash_from_filehandle<T: Digest>(mut f: File, mut d: T) -> Result<String>
 {
     let mut buf = [0u8;1024];
     loop {
@@ -318,17 +318,17 @@ fn get_checksum_from_filehandle<T: Digest>(mut f: File, mut d: T) -> Result<Stri
     // Ok(base64::encode(&data))
 }
 
-fn get_checksum_from_path(path: &std::path::Path, alg: &ChecksumAlgorithm) -> Result<String> {
+fn get_hash_from_path(path: &std::path::Path, alg: &FileHash) -> Result<String> {
     let f = File::open(path)?;
     let base64str = match alg {
-        ChecksumAlgorithm::MD5 => {
-            get_checksum_from_filehandle::<Md5>(f, md5::Digest::new())
+        FileHash::MD5 => {
+            get_hash_from_filehandle::<Md5>(f, md5::Digest::new())
         },
-        ChecksumAlgorithm::SHA1 => {
-            get_checksum_from_filehandle::<Sha1>(f, sha1::Digest::new())
+        FileHash::SHA1 => {
+            get_hash_from_filehandle::<Sha1>(f, sha1::Digest::new())
         },
-        ChecksumAlgorithm::SHA256 => {
-            get_checksum_from_filehandle::<Sha256>(f, sha2digest::new())
+        FileHash::SHA256 => {
+            get_hash_from_filehandle::<Sha256>(f, sha2digest::new())
         }
     };
     let base64str = match base64str {
@@ -375,8 +375,8 @@ fn output_symlink_info<'a>(
         let (file_version, product_version) = if ctx.get_version {
             pe::read_version_from_dll(path).unwrap_or((None, None))
         } else { (None, None) };
-        let checksum = if let Some(alg) = ctx.checksum.as_ref() {
-            get_checksum_from_path(path, &alg).map_or_else(|_| None, |v| Some(v))
+        let hash = if let Some(alg) = ctx.hash.as_ref() {
+            get_hash_from_path(path, &alg).map_or_else(|_| None, |v| Some(v))
         } else {
             None
         };
@@ -389,7 +389,7 @@ fn output_symlink_info<'a>(
             modified,
             file_version,
             product_version,
-            checksum
+            hash
         )?;
     }
     Ok((ctx, len))
@@ -424,8 +424,8 @@ fn output_symlink_file_info<'a>(
         let (file_version, product_version) = if ctx.get_version { 
             pe::read_version_from_dll(path).unwrap_or((None, None))
         } else { (None, None) };
-        let checksum = if let Some(alg) = ctx.checksum {
-            match get_checksum_from_path(path, &alg) {
+        let hash = if let Some(alg) = ctx.hash {
+            match get_hash_from_path(path, &alg) {
                 Ok(v) => Some(v),
                 Err(_) => None,
             }
@@ -440,7 +440,7 @@ fn output_symlink_file_info<'a>(
             modified,
             file_version,
             product_version,
-            checksum)?;
+            hash)?;
     }
     Ok((ctx.with_path(parent.as_path()), l.unwrap_or(0)))
 }
@@ -483,8 +483,8 @@ fn output_file_info<'a>(
     };
     if !ctx.dir_only {
         let (file_version, product_version) = pe::read_version_from_dll(path).unwrap_or((None, None));
-        let checksum = if let Some(alg) = ctx.checksum {
-            get_checksum_from_path(path, &alg).map_or_else(|_| None, |v| Some(v))
+        let hash = if let Some(alg) = ctx.hash {
+            get_hash_from_path(path, &alg).map_or_else(|_| None, |v| Some(v))
         } else {
             None
         };
@@ -497,7 +497,7 @@ fn output_file_info<'a>(
             modified,
             file_version,
             product_version,
-            checksum
+            hash
         )?;
     }
     Ok((ctx.with_path(parent.as_path()), len.unwrap_or(0)))
@@ -531,7 +531,7 @@ fn write_record<T>(
     last_write: Option<std::time::SystemTime>,
     file_version: Option<String>,
     product_version: Option<String>,
-    checksum: Option<String>
+    hash: Option<String>
 ) -> Result<()>
 where
     T: std::io::Write,
@@ -551,7 +551,7 @@ where
         last_modified: Some(ststr),
         file_version: file_version,
         product_version: product_version,
-        checksum: checksum,
+        hash: hash,
     })?;
     Ok(())
 }
